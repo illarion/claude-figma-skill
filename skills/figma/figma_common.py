@@ -121,11 +121,12 @@ def _urlopen_with_retry(req, max_attempts=3, account=None):
                 if upgrade_link:
                     print(f"[figma: upgrade info: {upgrade_link}]", file=sys.stderr)
             is_final = attempt == max_attempts - 1
-            suffix = "giving up" if is_final else f"sleeping {min(retry_after, MAX_RETRY_SLEEP)}s and retrying..."
+            sleep_for = min(retry_after, MAX_RETRY_SLEEP)
+            suffix = "giving up" if is_final else f"sleeping {sleep_for}s and retrying..."
             print(f"Rate limited ({', '.join(qualifier)}); {suffix}", file=sys.stderr)
             if is_final:
                 raise
-            time.sleep(min(retry_after, MAX_RETRY_SLEEP))
+            time.sleep(sleep_for)
 
 
 def _env_flag(name):
@@ -264,7 +265,7 @@ def _throttle_describe(state, now):
     remaining = _format_age(retry_until - now)
     rate_limit_type = state.get("rate_limit_type")
     tier_qualifier = f"{rate_limit_type} tier, " if rate_limit_type else ""
-    return until_str, remaining, tier_qualifier
+    return f"{tier_qualifier}until {until_str}, ~{remaining}"
 
 
 def _cache_disabled():
@@ -483,9 +484,8 @@ def figma_get(token, path, account):
 
     throttle_state = _throttle_read(account)
     if _throttle_active(account, throttle_state, now):
-        until_str, remaining, tier_qualifier = _throttle_describe(throttle_state, now)
         print(
-            f"[figma: throttle active for '{account}' ({tier_qualifier}until {until_str}, ~{remaining}) — attempting fresh fetch (may fail)]",
+            f"[figma: throttle active for '{account}' ({_throttle_describe(throttle_state, now)}) — attempting fresh fetch (may fail)]",
             file=sys.stderr,
         )
 
