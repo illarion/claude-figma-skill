@@ -91,6 +91,7 @@ def _die_on_http_error(e):
 
 
 def _urlopen_with_retry(req, max_attempts=3, account=None):
+    saw_low_tier = False
     for attempt in range(max_attempts):
         try:
             return urllib.request.urlopen(req, timeout=HTTP_TIMEOUT)
@@ -98,16 +99,33 @@ def _urlopen_with_retry(req, max_attempts=3, account=None):
             if e.code != 429:
                 raise
             retry_after = int(e.headers.get("Retry-After", 10))
+            rate_limit_type = e.headers.get("X-Figma-Rate-Limit-Type") or None
+            plan_tier = e.headers.get("X-Figma-Plan-Tier") or None
+            upgrade_link = e.headers.get("X-Figma-Upgrade-Link") or None
             if account is not None:
-                _throttle_write(account, retry_after, time.time())
-            if attempt == max_attempts - 1:
+                _throttle_write(account, retry_after, time.time(),
+                                rate_limit_type=rate_limit_type, plan_tier=plan_tier)
+            qualifier = []
+            if rate_limit_type:
+                qualifier.append(f"{rate_limit_type} tier")
+            if plan_tier:
+                qualifier.append(f"plan={plan_tier}")
+            qualifier.append(f"Retry-After: {retry_after}s")
+            if rate_limit_type == "low" and not saw_low_tier:
+                saw_low_tier = True
+                print(
+                    "[figma: 'low' rate-limit tier — the file is likely in a non-upgraded team. "
+                    "See README → Rate limits.]",
+                    file=sys.stderr,
+                )
+                if upgrade_link:
+                    print(f"[figma: upgrade info: {upgrade_link}]", file=sys.stderr)
+            is_final = attempt == max_attempts - 1
+            suffix = "giving up" if is_final else f"sleeping {min(retry_after, MAX_RETRY_SLEEP)}s and retrying..."
+            print(f"Rate limited ({', '.join(qualifier)}); {suffix}", file=sys.stderr)
+            if is_final:
                 raise
-            sleep_for = min(retry_after, MAX_RETRY_SLEEP)
-            print(
-                f"Rate limited (Retry-After: {retry_after}s); sleeping {sleep_for}s and retrying...",
-                file=sys.stderr,
-            )
-            time.sleep(sleep_for)
+            time.sleep(min(retry_after, MAX_RETRY_SLEEP))
 
 
 def _env_flag(name):
@@ -189,7 +207,7 @@ def _throttle_read(account):
     return data
 
 
-def _throttle_write(account, retry_after_seconds, now):
+def _throttle_write(account, retry_after_seconds, now, rate_limit_type=None, plan_tier=None):
     account_dir = os.path.join(CACHE_ROOT, account)
     try:
         os.makedirs(account_dir, exist_ok=True)
@@ -206,6 +224,10 @@ def _throttle_write(account, retry_after_seconds, now):
         "set_at": int(now),
         "retry_after_seconds": int(retry_after_seconds),
     }
+    if rate_limit_type:
+        payload["rate_limit_type"] = rate_limit_type
+    if plan_tier:
+        payload["plan_tier"] = plan_tier
     tmp = path + ".tmp"
     try:
         with open(tmp, "w") as f:
@@ -240,7 +262,9 @@ def _throttle_describe(state, now):
     retry_until = state.get("retry_until", now)
     until_str = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(retry_until))
     remaining = _format_age(retry_until - now)
-    return until_str, remaining
+    rate_limit_type = state.get("rate_limit_type")
+    tier_qualifier = f"{rate_limit_type} tier, " if rate_limit_type else ""
+    return until_str, remaining, tier_qualifier
 
 
 def _cache_disabled():
@@ -459,9 +483,9 @@ def figma_get(token, path, account):
 
     throttle_state = _throttle_read(account)
     if _throttle_active(account, throttle_state, now):
-        until_str, remaining = _throttle_describe(throttle_state, now)
+        until_str, remaining, tier_qualifier = _throttle_describe(throttle_state, now)
         print(
-            f"[figma: throttle active for '{account}' until {until_str} (~{remaining}) — attempting fresh fetch (may fail)]",
+            f"[figma: throttle active for '{account}' ({tier_qualifier}until {until_str}, ~{remaining}) — attempting fresh fetch (may fail)]",
             file=sys.stderr,
         )
 

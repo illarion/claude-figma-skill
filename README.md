@@ -14,6 +14,34 @@ A Claude Code plugin that provides Figma integration — extract CSS properties,
 - **Multi-instance auto-switching** — per-directory `.figmaskillrc` lets each project use its own token
 - **Custom API calls** — access any Figma REST endpoint via `call_api.py` for advanced use cases
 
+## Why use this: Figma's rate limits
+
+Figma's REST API is throttled with a leaky-bucket rate limiter, and the limit is tied to **the file's plan tier**, not your account's seat. A handful of fetches against the wrong file can lock you out for **days**.
+
+Tier 1 endpoints (`/v1/files/:key`, `/v1/files/:key/nodes`, `/v1/images`) — the ones every CSS extraction or inspection uses — are budgeted per-minute by where the file lives:
+
+| File's team plan | Tier 1 budget |
+|---|---|
+| Starter (free) | **10 req/min** — and capped at **6 reads/month** per file if you don't own the team |
+| Professional | 15 req/min |
+| Organization | 20 req/min |
+
+> *"If the integration or app tries to get the content of a file in a Starter plan for you, requests to that file are limited to up to 6 per month even if you have a Full seat in a different plan."*
+> — [Figma help center](https://help.figma.com/hc/en-us/articles/34963238552855)
+
+Go over the budget once and Figma's response is a `429` with a `Retry-After` measured in **hours to days** (multi-day cooldowns are well documented in Figma's own forums). The cache can't refill itself; you wait.
+
+This skill is built around that reality:
+
+- **Disk-backed cache** under `~/.cache/figma-skill/<account>/` with a 60-min TTL and a per-node index — one large fetch serves hundreds of subsequent queries without going back to Figma.
+- **Batched extraction** — `extract_css.py --nodes A B C` is one API call, not three.
+- **Throttle-aware SessionStart evictor** — when a 429 is recorded, the evictor preserves that account's cache instead of TTL-deleting data you can't re-fetch.
+- **Bounded retry sleep** (30s cap per attempt) — scripts never hang for hours on a multi-day `Retry-After`.
+- **Visible provenance** — every script's JSON output carries a `_cache` block (`{hit, fetched_at, age_seconds, account}`), and stderr shows the cache hit age. Per-call `--refresh` bypasses the cache when you know the design changed.
+- **`X-Figma-Rate-Limit-Type` capture** — on 429, stderr logs `low` vs `high` tier so you can tell a transient burst from the Starter-team penalty. A `low` tier almost always means the file is in a non-upgraded team; move the file to an upgraded team's space and the cap disappears.
+
+References: [Figma rate-limits doc](https://developers.figma.com/docs/rest-api/rate-limits/) · [Help center: What if I'm rate-limited?](https://help.figma.com/hc/en-us/articles/34963238552855-What-if-I-m-rate-limited)
+
 ## Installation
 
 In Claude Code, run:

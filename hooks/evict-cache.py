@@ -77,7 +77,7 @@ def _read_throttle(path):
     retry_until = data.get("retry_until")
     if not isinstance(retry_until, (int, float)):
         return None
-    return retry_until
+    return data
 
 
 def _account_from_path(path, root):
@@ -143,15 +143,18 @@ def _classify_accounts(now):
         if not os.path.isdir(account_dir):
             continue
         throttle_path = os.path.join(account_dir, ".throttle")
-        retry_until = _read_throttle(throttle_path)
-        if retry_until is None:
+        state = _read_throttle(throttle_path)
+        if state is None:
             continue
+        retry_until = state["retry_until"]
         if retry_until > now:
             throttled.add(entry)
             until_str = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(retry_until))
             remaining = _format_age(retry_until - now)
+            rate_limit_type = state.get("rate_limit_type")
+            tier_qualifier = f"{rate_limit_type} tier, " if rate_limit_type else ""
             notes.append(
-                f"[figma cache evict: throttle active for '{entry}' until {until_str} (~{remaining}) — preserving '{entry}' cache]"
+                f"[figma cache evict: throttle active for '{entry}' ({tier_qualifier}until {until_str}, ~{remaining}) — preserving '{entry}' cache]"
             )
             continue
         _remove(throttle_path)

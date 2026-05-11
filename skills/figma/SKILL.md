@@ -81,10 +81,13 @@ For wholesale invalidation of a single file under one account, suggest `rm -rf ~
 
 When Figma returns 429 for an account, the skill writes `~/.cache/figma-skill/<account>/.throttle` recording the `retry_until` timestamp. The SessionStart evictor reads this file and **preserves that account's cache** while throttle is active — TTL-stale entries that we cannot re-fetch are kept, only `.tmp` files are cleaned up. Other accounts continue to evict normally. The throttle file is automatically cleared on the next successful API call from that same account.
 
-Stderr signals to watch for (each carries the account name):
-- `[figma cache evict: throttle active for 'crm' until 2026-05-13 14:32 UTC (~39h) — preserving 'crm' cache]` — fired at session start when a long throttle is in effect.
+Stderr signals to watch for (each carries the account name and, when known, the rate-limit tier — `low` or `high`):
+- `[figma cache evict: throttle active for 'crm' (low tier, until 2026-05-13 14:32 UTC, ~39h) — preserving 'crm' cache]` — fired at session start when a long throttle is in effect.
 - `[figma cache evict: throttle expired for 'crm', resuming normal eviction]` — fired once when the recorded throttle has elapsed.
-- `[figma: throttle active for 'crm' until <date> — attempting fresh fetch (may fail)]` — fired in `figma_get` before a cache-miss network call when throttle is recorded.
+- `[figma: throttle active for 'crm' (low tier, until <date>, ~39h) — attempting fresh fetch (may fail)]` — fired in `figma_get` before a cache-miss network call when throttle is recorded.
+- `[figma: 'low' rate-limit tier — the file is likely in a non-upgraded team. See README → Rate limits.]` — fired once on the first 429 of a call when `X-Figma-Rate-Limit-Type` is `low`.
+
+A `high` tier 429 usually means a transient burst — wait the `Retry-After` and you're back. A `low` tier 429 with a multi-day `Retry-After` almost always means the file is in a Starter-plan team (capped at 6 reads/month) — surface this to the user and suggest moving the file to an upgraded team's space.
 
 In-process retry sleep is capped at 30s per attempt (max 3 attempts ≈ 90s total) so scripts never hang for hours waiting on a long `Retry-After`. If a 429 persists past the cap, the script exits with an HTTP error and the throttle file is left in place for the next session.
 
