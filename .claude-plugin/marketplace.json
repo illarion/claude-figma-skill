@@ -1,0 +1,21 @@
+{
+  "name": "claude-figma-skill",
+  "metadata": {
+      "description": "Figma integration for Claude Code"
+  },
+  "owner": {
+    "name": "Illarion Kovalchuk",
+    "url": "https://github.com/illarion"
+  },
+  "plugins": [
+    {
+      "name": "claude-figma-skill",
+      "description": "Claude Code skill for Figma — extract CSS, export images, and inspect design files.",
+      "version": "1.0.1",
+      "source": {
+        "source": "github",
+        "repo": "illarion/claude-figma-skill"
+      }
+    }
+  ]
+}

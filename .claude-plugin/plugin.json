@@ -1,0 +1,11 @@
+{
+  "name": "claude-figma-skill",
+  "description": "Claude Code skill for Figma — extract CSS, export images, and inspect design files.",
+  "version": "1.0.1",
+  "author": {
+    "name": "Illarion Kovalchuk"
+  },
+  "homepage": "https://github.com/illarion/claude-figma-skill",
+  "repository": "https://github.com/illarion/claude-figma-skill",
+  "license": "MIT"
+}
