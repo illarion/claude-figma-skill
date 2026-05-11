@@ -5,7 +5,7 @@ import os
 import sys
 import json
 import argparse
-from figma_common import load_credentials, figma_get, parse_figma_url
+from figma_common import load_account, figma_get, parse_figma_url
 
 
 def walk_tree(node, max_depth, current_depth=0):
@@ -41,8 +41,8 @@ def main():
         print("Provide a Figma URL or --file FILE_KEY", file=sys.stderr)
         sys.exit(1)
 
-    token = load_credentials()
-    data = figma_get(token, f"/v1/files/{file_key}?depth={args.depth}")
+    cfg = load_account()
+    data = figma_get(cfg["token"], f"/v1/files/{file_key}?depth={args.depth}", account=cfg["name"])
 
     pages = []
     for page in data.get("document", {}).get("children", []):

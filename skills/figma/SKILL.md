@@ -43,13 +43,13 @@ Scripts print the detected config name to stderr automatically.
 
 ### Caching
 
-GET responses are cached on disk under `~/.cache/figma-skill/<file_key>/` for 60 minutes. Identical and **overlapping** requests are served locally — for example, after `inspect_node.py X` populates the node cache, a subsequent `extract_css.py --node X` (or `--node` for any descendant of X) returns without an API call. This is the primary defense against Figma's aggressive throttling, which can return multi-day `Retry-After` values when many similar requests hit the API in quick succession.
+GET responses are cached on disk under `~/.cache/figma-skill/<account_name>/<file_key>/` for 60 minutes, where `<account_name>` is the `name` field from the `.figmaskillrc` that served the call. Each account has its own isolated cache, so data fetched under one account is never served to another. Identical and **overlapping** requests are served locally — for example, after `inspect_node.py X` populates the node cache, a subsequent `extract_css.py --node X` (or `--node` for any descendant of X) returns without an API call. This is the primary defense against Figma's aggressive throttling, which can return multi-day `Retry-After` values when many similar requests hit the API in quick succession.
 
 Cache hits are logged to stderr: `[figma cache: response-hit]` or `[figma cache: node-hit Nx]`.
 
 Image exports (`export_image.py`) are also cached — the downloaded file at `/tmp/figma-exports/...` is returned with `"cached": true` in the JSON output if it already exists.
 
-At session start, the skill runs a hook that deletes TTL-stale entries and then trims the total cache size below ~500 MB by evicting least-recently-used files first. Both `~/.cache/figma-skill/` and `/tmp/figma-exports/` are swept.
+At session start, the skill runs a hook that deletes TTL-stale entries and then trims the total cache size below ~500 MB by evicting least-recently-used files first. Both `~/.cache/figma-skill/<account>/` and `/tmp/figma-exports/<account>/` are swept; throttled accounts (see Throttle awareness) are preserved while their throttle is active.
 
 Env knobs:
 - `FIGMA_SKILL_NO_CACHE=1` — skip both reads and writes (also disables the SessionStart evictor)
@@ -66,7 +66,7 @@ Every user-facing script emits cache age information so you (and the user) can t
   - `[figma cache: node-hit 3x (oldest 12m)]` — multiple nodes synthesized from per-node cache
   - `[figma cache: partial-hit 2/3 (oldest 12m), fetching 1]` — some nodes cached, rest fetched
   - `[figma export: cached (12m old)]` — image short-circuited to local file
-- **JSON output** carries a `_cache` block on every result: `{"hit": true, "fetched_at": "2026-05-11T14:32:00Z", "age_seconds": 720}`. For `extract_css.py --nodes A B C` the array has a `_cache` block per element.
+- **JSON output** carries a `_cache` block on every result: `{"hit": true, "fetched_at": "2026-05-11T14:32:00Z", "age_seconds": 720, "account": "crm"}`. The `account` field tells you which `.figmaskillrc` served the data. For `extract_css.py --nodes A B C` the array has a `_cache` block per element.
 
 When relaying results to the user, **briefly mention the age** if it's a cache hit ("*This is from cache, fetched 12m ago.*"). The user can then decide whether to ask for a refresh.
 
@@ -75,7 +75,20 @@ Every script accepts `--refresh` to bypass the cache for that one call and re-fe
 - The age in `_cache.age_seconds` is large enough that you suspect the data may be stale
 - The user explicitly says "refresh" / "force fresh" / "ignore cache"
 
-For wholesale invalidation across an entire Figma file (rare), suggest the user run `rm -rf ~/.cache/figma-skill/<file_key>/`. This is a documented escape hatch, not a script feature.
+For wholesale invalidation of a single file under one account, suggest `rm -rf ~/.cache/figma-skill/<account>/<file_key>/`. To wipe an entire account's cache: `rm -rf ~/.cache/figma-skill/<account>/`. These are documented escape hatches, not script features.
+
+### Throttle awareness
+
+When Figma returns 429 for an account, the skill writes `~/.cache/figma-skill/<account>/.throttle` recording the `retry_until` timestamp. The SessionStart evictor reads this file and **preserves that account's cache** while throttle is active — TTL-stale entries that we cannot re-fetch are kept, only `.tmp` files are cleaned up. Other accounts continue to evict normally. The throttle file is automatically cleared on the next successful API call from that same account.
+
+Stderr signals to watch for (each carries the account name):
+- `[figma cache evict: throttle active for 'crm' until 2026-05-13 14:32 UTC (~39h) — preserving 'crm' cache]` — fired at session start when a long throttle is in effect.
+- `[figma cache evict: throttle expired for 'crm', resuming normal eviction]` — fired once when the recorded throttle has elapsed.
+- `[figma: throttle active for 'crm' until <date> — attempting fresh fetch (may fail)]` — fired in `figma_get` before a cache-miss network call when throttle is recorded.
+
+In-process retry sleep is capped at 30s per attempt (max 3 attempts ≈ 90s total) so scripts never hang for hours waiting on a long `Retry-After`. If a 429 persists past the cap, the script exits with an HTTP error and the throttle file is left in place for the next session.
+
+Escape hatch: `rm ~/.cache/figma-skill/<account>/.throttle` to clear recorded state for one account if you believe Figma has lifted the throttle and want normal eviction back.
 
 **Guidance:** prefer `extract_css.py --nodes A B C` over multiple invocations. The cache makes overlap free at the network level, but a single batched call still avoids extra process starts and produces denser cache entries.
 

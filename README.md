@@ -38,7 +38,7 @@ Then start a Claude Code session in your project root and type `/figma login`. T
 
 ### Multiple Figma workspaces
 
-If you work across different Figma accounts or workspaces, place a separate `.figmaskillrc` (by performing a `/figma login`) in each directory tree. The skill picks up the nearest one automatically — no manual switching needed.
+If you work across different Figma accounts or workspaces, place a separate `.figmaskillrc` (by performing a `/figma login`) in each directory tree. The skill picks up the nearest one automatically — no manual switching needed. Each account's cache is isolated under `~/.cache/figma-skill/<name>/`, so cached data and rate-limit state from one account is never served to another.
 
 ```
 ~/work/

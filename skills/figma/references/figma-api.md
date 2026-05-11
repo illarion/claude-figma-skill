@@ -23,6 +23,7 @@ All requests use `X-Figma-Token: {personal_access_token}` header.
 - Tier 1 (file_content:read): 10-20 req/min per Full seat
 - 429 response includes `Retry-After` header — under sustained pressure Figma may return multi-day values
 - The skill caches GET responses on disk for 60min by default (per-file under `~/.cache/figma-skill/`) and maintains a per-node index so overlapping requests skip the network. See `SKILL.md` § Caching for env knobs (`FIGMA_SKILL_NO_CACHE`, `FIGMA_SKILL_REFRESH`, `FIGMA_SKILL_CACHE_TTL`).
+- On 429, the skill records `retry_until` in `~/.cache/figma-skill/<account>/.throttle` (per-account) and the SessionStart evictor preserves that account's cache while its throttle is active. Other accounts continue normal eviction. In-process retry sleep is capped at 30s per attempt to prevent multi-hour hangs.
 
 ## Response Size Limits
 - 55 second timeout

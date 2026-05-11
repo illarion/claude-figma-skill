@@ -6,7 +6,7 @@ import sys
 import json
 import argparse
 import urllib.parse
-from figma_common import load_credentials, figma_get, parse_figma_url
+from figma_common import load_account, figma_get, parse_figma_url
 
 
 def walk_node(node, max_depth, current_depth=0):
@@ -50,8 +50,8 @@ def main():
         print("Provide a Figma URL with node-id, or --file and --node", file=sys.stderr)
         sys.exit(1)
 
-    token = load_credentials()
-    data = figma_get(token, f"/v1/files/{file_key}/nodes?ids={urllib.parse.quote(node_id)}")
+    cfg = load_account()
+    data = figma_get(cfg["token"], f"/v1/files/{file_key}/nodes?ids={urllib.parse.quote(node_id)}", account=cfg["name"])
 
     nodes = data.get("nodes", {})
     node_data = nodes.get(node_id)

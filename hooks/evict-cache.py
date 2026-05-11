@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Trim figma-skill caches at session start: drop TTL-stale entries, then evict
-LRU-first until total cache size is under FIGMA_SKILL_CACHE_MAX_BYTES."""
+"""Trim figma-skill caches at session start. Per-account: skip eviction for any
+account with an active .throttle file; LRU-evict the rest under
+FIGMA_SKILL_CACHE_MAX_BYTES."""
 
+import json
 import os
+import shutil
 import sys
 import time
 import tempfile
 
-CACHE_DIRS = [
-    os.path.join(os.path.expanduser("~"), ".cache", "figma-skill"),
-    os.path.join(tempfile.gettempdir(), "figma-exports"),
-]
+CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".cache", "figma-skill")
+EXPORTS_ROOT = os.path.join(tempfile.gettempdir(), "figma-exports")
+CACHE_DIRS = [CACHE_ROOT, EXPORTS_ROOT]
 DEFAULT_MAX_BYTES = 500 * 1024 * 1024
 DEFAULT_TTL = 3600
+IMAGE_EXTS = (".png", ".svg", ".jpg", ".jpeg", ".pdf")
 
 
 def _flag(name):
@@ -44,6 +47,47 @@ def _remove(path):
         return False
 
 
+def _format_age(seconds):
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        h = s // 3600
+        m = (s % 3600) // 60
+        if m:
+            return f"{h}h{m}m"
+        return f"{h}h"
+    d = s // 86400
+    h = (s % 86400) // 3600
+    if h:
+        return f"{d}d{h}h"
+    return f"{d}d"
+
+
+def _read_throttle(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    retry_until = data.get("retry_until")
+    if not isinstance(retry_until, (int, float)):
+        return None
+    return retry_until
+
+
+def _account_from_path(path, root):
+    rel = os.path.relpath(path, root)
+    parts = rel.split(os.sep)
+    if not parts or parts[0] in ("", "."):
+        return None
+    return parts[0]
+
+
 def _prune_empty_dirs(root):
     for dirpath, _, _ in os.walk(root, topdown=False):
         if dirpath == root:
@@ -55,16 +99,83 @@ def _prune_empty_dirs(root):
             pass
 
 
+def _migrate_legacy_layout():
+    removed = []
+
+    legacy_throttle = os.path.join(CACHE_ROOT, ".throttle")
+    if os.path.isfile(legacy_throttle):
+        if _remove(legacy_throttle):
+            removed.append("legacy .throttle")
+
+    if os.path.isdir(CACHE_ROOT):
+        for entry in os.listdir(CACHE_ROOT):
+            full = os.path.join(CACHE_ROOT, entry)
+            if not os.path.isdir(full):
+                continue
+            if os.path.isdir(os.path.join(full, "responses")) or os.path.isdir(os.path.join(full, "nodes")):
+                try:
+                    shutil.rmtree(full)
+                    removed.append(f"legacy cache dir '{entry}'")
+                except OSError:
+                    pass
+
+    if os.path.isdir(EXPORTS_ROOT):
+        for entry in os.listdir(EXPORTS_ROOT):
+            full = os.path.join(EXPORTS_ROOT, entry)
+            if os.path.isfile(full) and entry.lower().endswith(IMAGE_EXTS):
+                if _remove(full):
+                    removed.append(f"legacy export '{entry}'")
+
+    if removed:
+        print(
+            f"[figma cache evict: migrated from pre-namespace layout, removed {len(removed)} item(s)]",
+            file=sys.stderr,
+        )
+
+
+def _classify_accounts(now):
+    throttled = set()
+    notes = []
+    if not os.path.isdir(CACHE_ROOT):
+        return throttled, notes
+    for entry in sorted(os.listdir(CACHE_ROOT)):
+        account_dir = os.path.join(CACHE_ROOT, entry)
+        if not os.path.isdir(account_dir):
+            continue
+        throttle_path = os.path.join(account_dir, ".throttle")
+        retry_until = _read_throttle(throttle_path)
+        if retry_until is None:
+            continue
+        if retry_until > now:
+            throttled.add(entry)
+            until_str = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(retry_until))
+            remaining = _format_age(retry_until - now)
+            notes.append(
+                f"[figma cache evict: throttle active for '{entry}' until {until_str} (~{remaining}) — preserving '{entry}' cache]"
+            )
+            continue
+        _remove(throttle_path)
+        notes.append(f"[figma cache evict: throttle expired for '{entry}', resuming normal eviction]")
+    return throttled, notes
+
+
 def main():
     if _flag("FIGMA_SKILL_NO_CACHE"):
         return
+
+    _migrate_legacy_layout()
 
     ttl = _int_env("FIGMA_SKILL_CACHE_TTL", DEFAULT_TTL)
     max_bytes = _int_env("FIGMA_SKILL_CACHE_MAX_BYTES", DEFAULT_MAX_BYTES)
     now = time.time()
 
+    throttled, notes = _classify_accounts(now)
+    for line in notes:
+        print(line, file=sys.stderr)
+
     stale_removed = 0
     stale_bytes = 0
+    tmp_removed = 0
     survivors = []
 
     for root in CACHE_DIRS:
@@ -77,8 +188,11 @@ def main():
                 continue
             if path.endswith(".tmp"):
                 if _remove(path):
-                    stale_removed += 1
+                    tmp_removed += 1
                     stale_bytes += st.st_size
+                continue
+            account = _account_from_path(path, root)
+            if account in throttled:
                 continue
             if (now - st.st_mtime) > ttl:
                 if _remove(path):
@@ -105,15 +219,21 @@ def main():
         if os.path.isdir(root):
             _prune_empty_dirs(root)
 
-    if not stale_removed and not lru_removed:
+    if not stale_removed and not lru_removed and not tmp_removed:
         return
 
     parts = []
-    if stale_removed:
-        parts.append(f"{stale_removed} stale ({stale_bytes // 1024} KB)")
+    total_stale = stale_removed + tmp_removed
+    if total_stale:
+        parts.append(f"{total_stale} stale ({stale_bytes // 1024} KB)")
     if lru_removed:
         parts.append(f"{lru_removed} LRU ({lru_bytes // 1024} KB)")
-    print(f"[figma cache evict: {', '.join(parts)}]", file=sys.stderr)
+    preserved = (
+        f", preserved {', '.join(sorted(repr(a) for a in throttled))} under throttle"
+        if throttled
+        else ""
+    )
+    print(f"[figma cache evict: {', '.join(parts)}{preserved}]", file=sys.stderr)
 
 
 if __name__ == "__main__":

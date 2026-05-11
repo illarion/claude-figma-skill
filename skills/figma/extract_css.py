@@ -8,7 +8,7 @@ import math
 import argparse
 import urllib.parse
 from figma_common import (
-    load_credentials, figma_get, parse_figma_url,
+    load_account, figma_get, parse_figma_url,
     rgba_to_hex, figma_length,
 )
 
@@ -379,9 +379,9 @@ def main():
         print("Provide a Figma URL with node-id, --file and --node, or --file and --nodes", file=sys.stderr)
         sys.exit(1)
 
-    token = load_credentials()
+    cfg = load_account()
     encoded_ids = ",".join(urllib.parse.quote(nid) for nid in node_ids)
-    data = figma_get(token, f"/v1/files/{file_key}/nodes?ids={encoded_ids}&geometry=paths")
+    data = figma_get(cfg["token"], f"/v1/files/{file_key}/nodes?ids={encoded_ids}&geometry=paths", account=cfg["name"])
 
     nodes = data.get("nodes", {})
     results = []

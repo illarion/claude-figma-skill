@@ -10,12 +10,12 @@ import argparse
 import urllib.parse
 import urllib.request
 from figma_common import (
-    load_credentials, figma_get, parse_figma_url,
-    _format_age, _meta_hit, _meta_miss,
+    load_account, figma_get, parse_figma_url,
+    _format_age, _meta_hit, _meta_miss, _env_flag,
 )
 
 
-EXPORTS_DIR = os.path.join(tempfile.gettempdir(), "figma-exports")
+EXPORTS_ROOT = os.path.join(tempfile.gettempdir(), "figma-exports")
 
 
 def main():
@@ -42,32 +42,33 @@ def main():
         print("Provide a Figma URL with node-id, or --file and --node", file=sys.stderr)
         sys.exit(1)
 
-    os.makedirs(EXPORTS_DIR, exist_ok=True)
+    cfg = load_account()
+    exports_dir = os.path.join(EXPORTS_ROOT, cfg["name"])
+    os.makedirs(exports_dir, exist_ok=True)
     safe_node = node_id.replace(":", "-")
     filename = f"{file_key}_{safe_node}_{args.scale}x.{args.format}"
-    dest = os.path.join(EXPORTS_DIR, filename)
+    dest = os.path.join(exports_dir, filename)
 
-    def _flag(name):
-        return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no")
-
-    no_cache = _flag("FIGMA_SKILL_NO_CACHE")
-    refresh = _flag("FIGMA_SKILL_REFRESH")
+    no_cache = _env_flag("FIGMA_SKILL_NO_CACHE")
+    refresh = _env_flag("FIGMA_SKILL_REFRESH")
     now = time.time()
 
-    if os.path.exists(dest) and not no_cache and not refresh:
-        mtime = os.path.getmtime(dest)
-        print(f"[figma export: cached ({_format_age(now - mtime)} old)]", file=sys.stderr)
+    try:
+        mtime = os.path.getmtime(dest) if not no_cache and not refresh else None
+    except OSError:
+        mtime = None
+
+    if mtime is not None:
+        print(f"[figma export: cached for '{cfg['name']}' ({_format_age(now - mtime)} old)]", file=sys.stderr)
         print(json.dumps({
             "node_id": node_id,
             "format": args.format,
             "scale": args.scale,
             "local_path": dest,
             "cached": True,
-            "_cache": _meta_hit(mtime, now),
+            "_cache": _meta_hit(mtime, now, cfg["name"]),
         }, indent=2))
         return
-
-    token = load_credentials()
 
     params = {
         "ids": node_id,
@@ -77,7 +78,7 @@ def main():
         params["scale"] = str(args.scale)
 
     query = urllib.parse.urlencode(params)
-    data = figma_get(token, f"/v1/images/{file_key}?{query}")
+    data = figma_get(cfg["token"], f"/v1/images/{file_key}?{query}", account=cfg["name"])
 
     images = data.get("images", {})
     image_url = images.get(node_id)
@@ -95,7 +96,7 @@ def main():
         "format": args.format,
         "scale": args.scale,
         "local_path": dest,
-        "_cache": _meta_miss(time.time()),
+        "_cache": _meta_miss(time.time(), cfg["name"]),
     }
     print(json.dumps(result, indent=2))
 

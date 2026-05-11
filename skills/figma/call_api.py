@@ -4,7 +4,7 @@
 import sys
 import json
 import argparse
-from figma_common import load_credentials, figma_request
+from figma_common import load_account, figma_request
 
 
 def main():
@@ -14,13 +14,13 @@ def main():
     parser.add_argument("--data", help="JSON request body")
     args = parser.parse_args()
 
-    token = load_credentials()
+    cfg = load_account()
 
     data = None
     if args.data:
         data = json.loads(args.data)
 
-    result = figma_request(token, args.method, args.path, data)
+    result = figma_request(cfg["token"], args.method, args.path, data, account=cfg["name"])
     if result is not None:
         print(json.dumps(result, indent=2))
 
